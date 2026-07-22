@@ -1,0 +1,59 @@
+# Example CI/CD placement of the Oasis integration.
+#
+# This is illustrative — it shows WHERE the two hooks live in a real Terraform
+# pipeline. The gate is opt-in (preventive); the sync is the fallback that also
+# runs from the state backend for teams that don't adopt the gate.
+#
+#   plan ─► [ OASIS GATE ] ─► apply ─► [ OASIS SYNC ]
+#            approve/deny            record ground truth
+
+name: terraform-with-oasis
+
+on:
+  pull_request:
+    paths: ["infra/**"]
+
+jobs:
+  plan-gate-apply:
+    runs-on: ubuntu-latest
+    env:
+      OASIS_API_URL: ${{ secrets.OASIS_API_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform plan
+        working-directory: infra
+        run: |
+          terraform init -input=false
+          terraform plan -out=tfplan
+          terraform show -json tfplan > plan.json
+
+      # ── PREVENTIVE HOOK ──────────────────────────────────────────────
+      # Ask Oasis to review the proposed identity changes. Non-zero exit
+      # (deny) fails the job, so `apply` below never runs. Violations are
+      # emitted as ::error:: annotations and show inline on the PR.
+      - name: Oasis identity gate
+        working-directory: infra
+        run: uv run oasis-gate --plan plan.json
+
+      - name: Terraform apply
+        if: github.ref == 'refs/heads/main'
+        working-directory: infra
+        run: terraform apply -input=false tfplan
+
+      # ── DETECTIVE HOOK ───────────────────────────────────────────────
+      # Record ground truth after apply. In production this also runs
+      # independently, triggered by the state backend's write event
+      # (S3 notification / TFC webhook), so it covers applies that never
+      # went through this pipeline.
+      - name: Oasis sync (post-apply)
+        if: github.ref == 'refs/heads/main'
+        working-directory: infra
+        run: |
+          terraform show -json > state_new.json
+          uv run oasis-sync \
+            --old state_prev.json --new state_new.json

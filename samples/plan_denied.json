@@ -1,0 +1,39 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.7.5",
+  "resource_changes": [
+    {
+      "address": "aws_iam_role.super_admin",
+      "mode": "managed",
+      "type": "aws_iam_role",
+      "name": "super_admin",
+      "provider_name": "registry.terraform.io/hashicorp/aws",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "name": "super-admin",
+          "managed_policy_arns": [
+            "arn:aws:iam::aws:policy/AdministratorAccess"
+          ],
+          "tags": {}
+        }
+      }
+    },
+    {
+      "address": "aws_iam_access_key.ci_deploy",
+      "mode": "managed",
+      "type": "aws_iam_access_key",
+      "name": "ci_deploy",
+      "provider_name": "registry.terraform.io/hashicorp/aws",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "user": "ci-deploy",
+          "status": "Active"
+        }
+      }
+    }
+  ]
+}

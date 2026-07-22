@@ -1,0 +1,28 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.7.5",
+  "resource_changes": [
+    {
+      "address": "aws_iam_role.invoice_sync",
+      "mode": "managed",
+      "type": "aws_iam_role",
+      "name": "invoice_sync",
+      "provider_name": "registry.terraform.io/hashicorp/aws",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "name": "invoice-sync",
+          "managed_policy_arns": [
+            "arn:aws:iam::aws:policy/AmazonSQSFullAccess"
+          ],
+          "tags": {
+            "owner": "finance-team@company.com",
+            "team": "finance",
+            "env": "prod"
+          }
+        }
+      }
+    }
+  ]
+}

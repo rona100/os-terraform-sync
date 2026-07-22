@@ -1,0 +1,109 @@
+{
+  "format_version": "1.0",
+  "terraform_version": "1.7.5",
+  "values": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "aws_iam_role.payment_processor",
+          "mode": "managed",
+          "type": "aws_iam_role",
+          "name": "payment_processor",
+          "provider_name": "registry.terraform.io/hashicorp/aws",
+          "values": {
+            "arn": "arn:aws:iam::123456789012:role/payment-processor",
+            "name": "payment-processor",
+            "create_date": "2024-01-15T10:00:00Z",
+            "managed_policy_arns": [
+              "arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess"
+            ],
+            "tags": {
+              "owner": "payments-team@company.com",
+              "team": "payments",
+              "env": "prod"
+            }
+          }
+        },
+        {
+          "address": "aws_iam_role.report_generator",
+          "mode": "managed",
+          "type": "aws_iam_role",
+          "name": "report_generator",
+          "provider_name": "registry.terraform.io/hashicorp/aws",
+          "values": {
+            "arn": "arn:aws:iam::123456789012:role/report-generator",
+            "name": "report-generator",
+            "create_date": "2024-06-02T09:30:00Z",
+            "managed_policy_arns": [
+              "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"
+            ],
+            "tags": {
+              "owner": "analytics-team@company.com",
+              "team": "analytics",
+              "env": "prod"
+            }
+          }
+        },
+        {
+          "address": "aws_iam_user.batch_runner",
+          "mode": "managed",
+          "type": "aws_iam_user",
+          "name": "batch_runner",
+          "provider_name": "registry.terraform.io/hashicorp/aws",
+          "values": {
+            "arn": "arn:aws:iam::123456789012:user/batch-runner",
+            "name": "batch-runner",
+            "tags": {
+              "owner": "platform-team@company.com",
+              "team": "platform"
+            }
+          }
+        },
+        {
+          "address": "aws_iam_access_key.batch_runner",
+          "mode": "managed",
+          "type": "aws_iam_access_key",
+          "name": "batch_runner",
+          "provider_name": "registry.terraform.io/hashicorp/aws",
+          "values": {
+            "id": "AKIA1234567890BATCH1",
+            "user": "batch-runner",
+            "status": "Active",
+            "create_date": "2024-03-10T00:00:00Z"
+          }
+        },
+        {
+          "address": "aws_secretsmanager_secret.payment_processor_key",
+          "mode": "managed",
+          "type": "aws_secretsmanager_secret",
+          "name": "payment_processor_key",
+          "provider_name": "registry.terraform.io/hashicorp/aws",
+          "values": {
+            "arn": "arn:aws:secretsmanager:us-east-1:123456789012:secret/payment-processor-key",
+            "id": "arn:aws:secretsmanager:us-east-1:123456789012:secret/payment-processor-key",
+            "name": "payment-processor-key",
+            "description": "API credential fronted by the payment-processor role",
+            "tags": {
+              "identity": "payment-processor"
+            }
+          }
+        },
+        {
+          "address": "aws_secretsmanager_secret_rotation.payment_processor_key",
+          "mode": "managed",
+          "type": "aws_secretsmanager_secret_rotation",
+          "name": "payment_processor_key",
+          "provider_name": "registry.terraform.io/hashicorp/aws",
+          "values": {
+            "secret_id": "arn:aws:secretsmanager:us-east-1:123456789012:secret/payment-processor-key",
+            "rotation_rules": [
+              {
+                "automatically_after_days": 90
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
