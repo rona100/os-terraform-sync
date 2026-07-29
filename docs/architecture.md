@@ -30,7 +30,7 @@ without change.
 | `models.py` | Plain dataclasses shared by everything: `TerraformResource`, `OasisIdentity`, `IdentityChange`, `PlanChange`, plus the `LifecycleEvent` / `Verdict` enums and the `IDENTITY_RESOURCE_TYPES` / `SECRET_RESOURCE_TYPES` sets that classify resources. |
 | `tf_parser.py` | Parses `terraform show -json`. `parse_state()` returns identity resources keyed by TF **address**; `parse_plan()` returns proposed `PlanChange`s. Both read the *same* schema, which is why one parser serves both hooks. |
 | `differ.py` | Turns parsed input into `IdentityChange` events. Two entrypoints — `diff_states` (two state files) and `diff_against_inventory` (state vs. Oasis inventory). Also flags privilege-increase policy attachments. |
-| `translator.py` | Maps a `TerraformResource` to an `OasisIdentity`: resolves ownership, sets `source: terraform`, and folds access keys into their user as `associated_secrets`. |
+| `translator.py` | Maps a `TerraformResource` to an `OasisIdentity`: resolves ownership, derives `classification` + the `trust` surface, sets `source: terraform`, and folds access keys into their user as `associated_secrets`. |
 | `oasis_client.py` | Thin `httpx` wrapper over the three Oasis endpoints. Base URL from `--api-url` or `OASIS_API_URL` (default `http://127.0.0.1:8080`). |
 | `sync_cli.py` | `oasis-sync` entrypoint — picks the differ mode based on whether `--old` is given, prints the diff + reconciliation report + before/after inventory. |
 | `gate_cli.py` | `oasis-gate` entrypoint — sends plan changes for review and maps the verdict to an exit code (deny → non-zero). |
@@ -42,8 +42,11 @@ without change.
   across applies even when the ARN is "known after apply". Carries the raw
   `values` dict.
 - **`OasisIdentity`** — the Oasis-schema record: `id` (ARN), `type`, `name`,
-  `owner`, `source`, `lifecycle_status`, `attached_policies`,
-  `associated_secrets`, `tags`, `created_at`. `to_dict()` is the wire format.
+  `owner`, `source`, `lifecycle_status`, `attached_policies`, `trust`,
+  `associated_secrets`, `tags`, `created_at`, `classification`. `to_dict()` is the
+  wire format. `attached_policies` records *what the identity can do*; `trust` (a
+  distilled `assume_role_policy` — see [Trust surface](#trust-surface-who-can-assume))
+  records the complementary half, *who can assume it*.
 - **`IdentityChange`** — an `OasisIdentity` plus a `LifecycleEvent`
   (`create` / `update` / `destroy`) and human-readable `notes`.
 - **`PlanChange`** — a proposed change from a plan: `address`, `tf_type`,
@@ -229,6 +232,24 @@ OIDC/SAML providers themselves are **trust anchors, not identities**
 (`FEDERATION_RESOURCE_TYPES`): they're parsed for context and excluded by
 `is_standalone_identity`, alongside secrets and rotation config.
 
+### Trust surface: who can assume
+
+`credential_type` is a one-line *rollup*; the ILM inventory also needs the underlying
+principals, because a federated GitHub-OIDC role and a wildcard `"AWS": "*"` collapse to
+the same rollup yet have wildly different blast radius. `trust_summary()` therefore
+persists a distilled `trust` list on the identity — one entry per principal:
+
+| Field | Meaning |
+|---|---|
+| `principal_type` | `federated` / `service` / `aws` / `wildcard` |
+| `principal` | the principal value (provider ARN, service, account/root/ARN) |
+| `external` | could this be an outside party? `service` ⇒ false; federated / named-AWS ⇒ true |
+| `requires_external_id` | the statement pins an `sts:ExternalId` condition (confused-deputy guard) |
+
+This is the structural fact `attached_policies` can't express: *who can become this
+identity*. It is what lets the gate reason about trust (below) and what a sync flags as
+a **`[TRUST INCREASE]`** when a new external principal appears on an existing role.
+
 `is_sensitive_policy` lives here and is shared with `differ.py`, so "privilege
 increase" means the same thing in classification and in diff notes. (`mock_oasis/
 policy.py` deliberately keeps its own copy — server-side policy is owned by Oasis, not
@@ -267,7 +288,7 @@ Two of these are the whole argument for bridging the systems:
 The two systems own different halves of a record:
 
 - **Terraform-owned (authoritative):** `owner`, `source`, `classification`,
-  `attached_policies`, `tags`, `lifecycle_status`.
+  `attached_policies`, `trust`, `tags`, `lifecycle_status`.
 - **Discovery-owned (runtime facts Terraform cannot observe):** `last_used`,
   `is_stale`, and secret rotation *timestamps* (`last_rotated_at`, `next_rotation_at`).
 
@@ -317,6 +338,23 @@ two sources genuinely independent rather than one calling the other.
 each `change -> Violation | None`. Any **high**-severity violation forces verdict
 `deny`; anything else with violations is `approve_with_warnings`; otherwise
 `approve`.
+
+| Rule | Fires on | Severity |
+|---|---|---|
+| `no-admin-on-new-nhi` | create of a role requesting an admin managed policy | high |
+| `no-long-lived-access-key` | create of an `aws_iam_access_key` | high |
+| `require-owner-tag` | create of a role/user with no owner/team tag | medium |
+| `no-destroy-with-active-secrets` | delete/replace of a user | medium |
+| `no-wildcard-trust` | create **or update** adding a wildcard trust `Principal` | high |
+| `no-unconstrained-cross-account-trust` | create/update adding an `AWS` principal with no `sts:ExternalId` | medium |
+
+`rule_no_external_trust` reads `assume_role_policy` straight out of the plan's `after`
+(which is why the gate now also ships `before` — so an update flags only the *newly
+added* principals, never a role's unchanged trust). It fires on **create *and* update**,
+deliberately: attaching new trust to an existing role is an `update`, the escalation path
+the create-only admin rule misses. Federation is intentionally *not* flagged — it is the
+sanctioned workload-identity pattern. `policy.py` keeps its **own** trust parser rather
+than importing the client's: server-side policy is owned by Oasis, not the customer repo.
 
 ## Extending it
 

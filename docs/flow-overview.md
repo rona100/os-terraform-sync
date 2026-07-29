@@ -30,8 +30,12 @@ Note the **two** writers into the inventory. Sync supplies what only Terraform k
 disagreement is the finding.
 
 - **Gate** (`oasis_bridge/gate_cli.py`) — opt-in CI step. Reviews the *proposed*
-  plan against central Oasis policy (`mock_oasis/policy.py`). A `deny` verdict
-  stops the pipeline before `apply` ever runs.
+  plan against central Oasis policy (`mock_oasis/policy.py`) — not just *what* an
+  identity can do (admin policies, long-lived keys) but *who may assume* it (a
+  wildcard trust `Principal` is denied; an unconstrained cross-account one is
+  warned), on update as well as create. Each change carries `before`/`after` so a
+  trust rule flags only newly added principals. A `deny` verdict stops the pipeline
+  before `apply` ever runs.
 - **Discovery** (`mock_oasis/discovery.py`) — continuous, server-side. Scans the cloud
   for what actually exists. It confirms (or contradicts) what sync only *claims*: a
   destroyed identity sits at `decommission_pending` until a scan either confirms it is

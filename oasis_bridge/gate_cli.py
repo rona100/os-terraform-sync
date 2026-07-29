@@ -47,7 +47,15 @@ def main(argv: list[str] | None = None) -> int:
         "run_id": os.environ.get("GITHUB_RUN_ID", "local-run"),
         "actor": os.environ.get("GITHUB_ACTOR", os.environ.get("USER", "unknown")),
         "changes": [
-            {"address": c.address, "tf_type": c.tf_type, "action": c.action, "after": c.after}
+            {
+                "address": c.address,
+                "tf_type": c.tf_type,
+                "action": c.action,
+                "after": c.after,
+                # `before` lets trust/update rules judge only what actually changed,
+                # instead of re-flagging a role's pre-existing (unchanged) trust.
+                "before": c.before,
+            }
             for c in changes
         ],
     }

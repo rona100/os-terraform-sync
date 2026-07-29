@@ -23,6 +23,26 @@
           }
         }
       }
+    },
+    {
+      "address": "aws_iam_role.github_ci",
+      "mode": "managed",
+      "type": "aws_iam_role",
+      "name": "github_ci",
+      "provider_name": "registry.terraform.io/hashicorp/aws",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "name": "github-ci",
+          "managed_policy_arns": ["arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"],
+          "tags": {
+            "owner": "platform-team@company.com",
+            "team": "platform"
+          },
+          "assume_role_policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"sts:AssumeRoleWithWebIdentity\",\"Principal\":{\"Federated\":\"arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com\"},\"Condition\":{\"StringLike\":{\"token.actions.githubusercontent.com:sub\":\"repo:my-org/*\"}}}]}"
+        }
+      }
     }
   ]
 }

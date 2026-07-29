@@ -47,6 +47,7 @@ def _seed() -> dict[str, dict[str, Any]]:
             "tags": {},
             "created_at": "2024-01-15T10:00:00Z",
             "classification": {},              # <-- discovery can't classify either
+            "trust": [],                       # <-- Terraform enriches: who may assume it
             "last_used": "2025-11-01T08:00:00Z",
             "is_stale": False,
         },
@@ -64,6 +65,7 @@ def _seed() -> dict[str, dict[str, Any]]:
             "tags": {},
             "created_at": "2024-06-02T09:30:00Z",
             "classification": {},
+            "trust": [],
             "last_used": "2024-08-10T04:15:00Z",   # <-- not used in over a year
             "is_stale": True,                      # <-- deprecation candidate
         },
@@ -169,7 +171,7 @@ def plan_review(req: PlanReviewRequest) -> dict[str, Any]:
 
 # --- helpers --------------------------------------------------------------
 _TRACKED_FIELDS = [
-    "owner", "source", "lifecycle_status", "attached_policies", "classification",
+    "owner", "source", "lifecycle_status", "attached_policies", "classification", "trust",
 ]
 
 # Fields only *discovery* can observe (runtime facts). Terraform sends them as None;

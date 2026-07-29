@@ -59,6 +59,26 @@ def _policy_delta(old: TerraformResource, new: TerraformResource) -> list[str]:
     )
 
 
+def _trust_delta(old_trust: list[dict], new_trust: list[dict]) -> list[str]:
+    """Human-readable notes for how a role's trust surface changed.
+
+    Trust is *who can assume the identity* -- a newly added external/wildcard
+    principal is a privilege increase in the same spirit as an admin policy, so it
+    gets the same loud flag.
+    """
+    old_keys = {p.get("principal") for p in old_trust}
+    notes: list[str] = []
+    for p in new_trust:
+        if p.get("principal") in old_keys:
+            continue
+        flag = "  [TRUST INCREASE]" if p.get("external") else ""
+        notes.append(f"trust added: +{p.get('principal_type')}:{_short(str(p.get('principal')))}{flag}")
+    for p in old_trust:
+        if p.get("principal") not in {n.get("principal") for n in new_trust}:
+            notes.append(f"trust removed: -{p.get('principal_type')}:{_short(str(p.get('principal')))}")
+    return notes
+
+
 def _short(arn: str) -> str:
     return arn.rsplit("/", 1)[-1] if "/" in arn else arn
 
@@ -148,6 +168,7 @@ def _inventory_delta(before: dict, after: OasisIdentity) -> list[str]:
     notes.extend(
         _policy_delta_lists(before.get("attached_policies", []), after.attached_policies)
     )
+    notes.extend(_trust_delta(before.get("trust") or [], after.trust))
     return notes
 
 
@@ -172,6 +193,7 @@ def _identity_from_inventory(rec: dict, lifecycle_status: str) -> OasisIdentity:
         associated_secrets=list(rec.get("associated_secrets", [])),
         tags=rec.get("tags") or {},
         created_at=rec.get("created_at"),
+        trust=list(rec.get("trust", [])),
     )
 
 

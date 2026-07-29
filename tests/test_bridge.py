@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from oasis_bridge.differ import diff_against_inventory, diff_states
+from oasis_bridge.differ import _trust_delta, diff_against_inventory, diff_states
 from oasis_bridge.models import LifecycleEvent
 from oasis_bridge.tf_parser import load_json, parse_plan, parse_state
 from oasis_bridge.translator import (
@@ -19,11 +19,12 @@ from oasis_bridge.translator import (
     is_standalone_identity,
     resolve_owner,
     to_oasis_identity,
+    trust_summary,
 )
 from oasis_bridge.models import TerraformResource
 from mock_oasis.discovery import scan
-from mock_oasis.policy import evaluate
-from mock_oasis.server import _merge
+from mock_oasis.policy import evaluate, rule_no_external_trust
+from mock_oasis.server import _TRACKED_FIELDS, _merge, _reconcile
 
 SAMPLES = Path(__file__).resolve().parents[1] / "samples"
 
@@ -339,6 +340,97 @@ def test_gate_approves_clean_plan():
     verdict, violations = evaluate(changes)
     assert verdict == "approve"
     assert violations == []
+
+
+def test_trust_summary_captures_who_can_assume():
+    # federated (OIDC) principal: an outside party, no standing credential
+    fed = TerraformResource("aws_iam_role.f", "aws_iam_role", "f", "arn", "f",
+                            {"assume_role_policy": _trust_policy({"Federated": "arn:aws:iam::123456789012:oidc-provider/x"})})
+    [entry] = trust_summary(fed)
+    assert entry["principal_type"] == "federated" and entry["external"] is True
+
+    # a service principal is not an external party
+    svc = TerraformResource("aws_iam_role.s", "aws_iam_role", "s", "arn", "s",
+                            {"assume_role_policy": _trust_policy({"Service": "lambda.amazonaws.com"})})
+    assert trust_summary(svc)[0]["principal_type"] == "service"
+    assert trust_summary(svc)[0]["external"] is False
+
+    # a wildcard principal -- anyone can assume
+    wild = TerraformResource("aws_iam_role.w", "aws_iam_role", "w", "arn", "w",
+                             {"assume_role_policy": _trust_policy({"AWS": "*"})})
+    assert trust_summary(wild)[0]["principal_type"] == "wildcard"
+
+    # an sts:ExternalId condition is captured (confused-deputy guard)
+    guarded = TerraformResource("aws_iam_role.g", "aws_iam_role", "g", "arn", "g",
+                                {"assume_role_policy": json.dumps({"Version": "2012-10-17", "Statement": [
+                                    {"Effect": "Allow", "Action": "sts:AssumeRole",
+                                     "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+                                     "Condition": {"StringEquals": {"sts:ExternalId": "abc"}}}]})})
+    assert trust_summary(guarded)[0]["requires_external_id"] is True
+
+    # a user carries no assume_role_policy -> nothing to summarise
+    user = TerraformResource("aws_iam_user.u", "aws_iam_user", "u", "arn", "u", {"name": "u"})
+    assert trust_summary(user) == []
+
+
+def test_trust_surface_is_persisted_and_serialized():
+    # the ILM inventory must record *who can assume* the identity, not just a
+    # coarse credential_type -- so a federated role and a wildcard role differ.
+    state = parse_state(load_json(str(SAMPLES / "state_v2.json")))
+    by_name = {r.values.get("name"): r for r in state.values()}
+    ident = to_oasis_identity(by_name["github-actions-deployer"], state)
+    assert ident.trust and ident.trust[0]["principal_type"] == "federated"
+    assert "trust" in ident.to_dict()
+
+
+def test_trust_change_surfaces_in_sync_and_reconciliation():
+    # a newly added external principal is flagged loudly, like a privilege increase
+    notes = _trust_delta([], [{"principal_type": "aws", "principal": "arn:aws:iam::999:root", "external": True}])
+    assert any("TRUST INCREASE" in n for n in notes)
+
+    # ...and the server tracks trust as a reconciled field
+    assert "trust" in _TRACKED_FIELDS
+    diffs = _reconcile({"trust": []}, {"trust": [{"principal": "x"}]})
+    assert any(d["field"] == "trust" for d in diffs)
+
+
+def test_gate_denies_wildcard_trust_added_on_update():
+    # attaching wildcard trust to an existing role is an *update* -- the very path
+    # the create-only admin rule misses.
+    plan = load_json(str(SAMPLES / "plan_denied.json"))
+    changes = [
+        {"address": c.address, "tf_type": c.tf_type, "action": c.action,
+         "after": c.after, "before": c.before}
+        for c in parse_plan(plan)
+    ]
+    verdict, violations = evaluate(changes)
+    assert verdict == "deny"
+    assert "no-wildcard-trust" in {v["rule"] for v in violations}
+
+    legacy = next(c for c in changes if c["address"] == "aws_iam_role.legacy_integration")
+    v = rule_no_external_trust(legacy)
+    assert v["rule"] == "no-wildcard-trust" and v["severity"] == "high"
+
+
+def test_gate_allows_federation_but_warns_on_unconstrained_cross_account():
+    # federation is the sanctioned workload-identity pattern -> no violation
+    fed = {"address": "aws_iam_role.f", "tf_type": "aws_iam_role", "action": "create",
+           "after": {"assume_role_policy": _trust_policy({"Federated": "arn:aws:iam::1:oidc-provider/x"})}}
+    assert rule_no_external_trust(fed) is None
+
+    # a bare cross-account principal with no ExternalId -> confused-deputy warning
+    x = {"address": "aws_iam_role.x", "tf_type": "aws_iam_role", "action": "create",
+         "after": {"assume_role_policy": _trust_policy({"AWS": "arn:aws:iam::999999999999:root"})}}
+    v = rule_no_external_trust(x)
+    assert v["severity"] == "medium" and v["rule"] == "no-unconstrained-cross-account-trust"
+
+    # ...but an ExternalId condition clears it
+    guarded = {"address": "aws_iam_role.g", "tf_type": "aws_iam_role", "action": "create",
+               "after": {"assume_role_policy": json.dumps({"Version": "2012-10-17", "Statement": [
+                   {"Effect": "Allow", "Action": "sts:AssumeRole",
+                    "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+                    "Condition": {"StringEquals": {"sts:ExternalId": "abc"}}}]})}}
+    assert rule_no_external_trust(guarded) is None
 
 
 if __name__ == "__main__":

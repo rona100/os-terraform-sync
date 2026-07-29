@@ -73,7 +73,7 @@ echo "A well-formed plan passes the gate; terraform apply would proceed."
 uv run oasis-gate --plan samples/plan_approved.json && echo "gate exit code: 0 (apply allowed)"
 
 section "SCENARIO 5  —  Policy gate on a risky plan  (opt-in / preventive)"
-echo "Admin-on-new-role + long-lived key -> DENY. apply is blocked (exit 1)."
+echo "Admin-on-new-role + long-lived key + wildcard trust added on update -> DENY. apply is blocked (exit 1)."
 if uv run oasis-gate --plan samples/plan_denied.json; then
   echo "gate exit code: 0"
 else

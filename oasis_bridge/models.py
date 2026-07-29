@@ -95,6 +95,10 @@ class TerraformResource:
 class OasisIdentity:
     """An identity record in the Oasis inventory schema.
 
+    `attached_policies` answers *what this identity can do*; `trust` answers the
+    complementary half, *who can assume it* (the role's distilled trust policy) --
+    both are Terraform-owned provenance the translator fills in.
+
     `last_used` / `is_stale` are *discovery-owned*: they are runtime facts Terraform
     cannot know, so the translator leaves them None and the Oasis side merges rather
     than overwrites (see mock_oasis/server.py::_merge).
@@ -110,6 +114,7 @@ class OasisIdentity:
     tags: dict[str, str] = field(default_factory=dict)
     created_at: Optional[str] = None
     classification: dict[str, Any] = field(default_factory=dict)
+    trust: list[dict[str, Any]] = field(default_factory=list)   # who may assume (roles only)
     last_used: Optional[str] = None       # discovery-owned
     is_stale: Optional[bool] = None       # discovery-owned (None = Terraform can't know)
 
@@ -126,6 +131,7 @@ class OasisIdentity:
             "tags": self.tags,
             "created_at": self.created_at,
             "classification": self.classification,
+            "trust": self.trust,
             "last_used": self.last_used,
             "is_stale": self.is_stale,
         }

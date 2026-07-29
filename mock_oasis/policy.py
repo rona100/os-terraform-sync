@@ -9,6 +9,7 @@ Each rule inspects a proposed plan change and may emit a PolicyViolation.
 """
 from __future__ import annotations
 
+import json
 from typing import Any, Callable
 
 Violation = dict[str, str]
@@ -24,6 +25,65 @@ def _policies(change: dict[str, Any]) -> list[str]:
 
 def _tags(change: dict[str, Any]) -> dict[str, str]:
     return _after(change).get("tags") or {}
+
+
+# --- trust-policy parsing (server-side, deliberately independent of the client) ---
+# The gate reads `assume_role_policy` straight out of the plan's `after` values. We keep
+# our own tolerant parser here rather than importing oasis_bridge.translator, for the
+# same reason SENSITIVE_POLICIES is duplicated below: server-side policy is owned by
+# Oasis and must not depend on the customer's client code.
+def _assume_principals(values: dict[str, Any]) -> list[tuple[str, Any, bool]]:
+    """Yield (principal_type, principal_value, requires_external_id) for a trust doc.
+
+    principal_type is one of wildcard | service | federated | aws. Malformed/absent
+    policies yield [] -- an unparseable trust policy must not crash the gate.
+    """
+    raw = values.get("assume_role_policy")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            return []
+    if not isinstance(raw, dict):
+        return []
+    statements = raw.get("Statement") or []
+    if isinstance(statements, dict):
+        statements = [statements]
+
+    out: list[tuple[str, Any, bool]] = []
+    for stmt in statements:
+        if not isinstance(stmt, dict):
+            continue
+        ext_id = _has_external_id(stmt)
+        principal = stmt.get("Principal")
+        if principal == "*":
+            out.append(("wildcard", "*", ext_id))
+            continue
+        if not isinstance(principal, dict):
+            continue
+        for kind, vals in principal.items():
+            for value in vals if isinstance(vals, list) else [vals]:
+                if value == "*":
+                    out.append(("wildcard", "*", ext_id))
+                elif kind == "Service":
+                    out.append(("service", value, ext_id))
+                elif kind == "Federated":
+                    out.append(("federated", value, ext_id))
+                else:
+                    out.append(("aws", value, ext_id))
+    return out
+
+
+def _has_external_id(stmt: dict[str, Any]) -> bool:
+    condition = stmt.get("Condition")
+    if not isinstance(condition, dict):
+        return False
+    for operands in condition.values():
+        if isinstance(operands, dict) and any(
+            str(k).lower() == "sts:externalid" for k in operands
+        ):
+            return True
+    return False
 
 
 SENSITIVE_POLICIES = ("AdministratorAccess", "IAMFullAccess", "PowerUserAccess")
@@ -91,11 +151,59 @@ def rule_no_destroy_with_active_secrets(change: dict[str, Any]) -> Violation | N
     return None
 
 
+def rule_no_external_trust(change: dict[str, Any]) -> Violation | None:
+    """Guard *who* may assume a role, not just what it can do.
+
+    Fires on create AND update (attaching new trust to an existing role is an
+    `update` -- exactly the escalation path the create-only admin rule misses):
+
+      wildcard principal ("*")                 -> deny  (anyone can assume)
+      AWS principal with no sts:ExternalId      -> warn  (confused-deputy risk)
+      federated / service principals            -> allowed (sanctioned patterns)
+
+    On update we only judge principals *newly added* vs `before`, so an unchanged
+    trust policy never nags. Cross-account detection is shape-based: plan ARNs are
+    "known after apply" (null), so we cannot compute true same-vs-cross account and
+    instead flag the dangerous shapes (wildcard, unconstrained named AWS principal).
+    """
+    if change["action"] not in ("create", "update") or change["tf_type"] != "aws_iam_role":
+        return None
+
+    existing = set()
+    if change["action"] == "update":
+        existing = {(t, v) for (t, v, _) in _assume_principals(change.get("before") or {})}
+
+    warning: Violation | None = None
+    for ptype, value, has_external_id in _assume_principals(_after(change)):
+        if (ptype, value) in existing:
+            continue
+        if ptype == "wildcard":
+            return {
+                "rule": "no-wildcard-trust",
+                "severity": "high",
+                "message": (
+                    f"'{change['address']}' trusts a wildcard principal (\"*\") in its "
+                    f"assume-role policy -- any principal could assume this role."
+                ),
+            }
+        if ptype == "aws" and not has_external_id and warning is None:
+            warning = {
+                "rule": "no-unconstrained-cross-account-trust",
+                "severity": "medium",
+                "message": (
+                    f"'{change['address']}' trusts AWS principal {value} with no "
+                    f"sts:ExternalId condition (confused-deputy risk)."
+                ),
+            }
+    return warning
+
+
 RULES: list[Callable[[dict[str, Any]], Violation | None]] = [
     rule_no_admin_on_new_nhi,
     rule_no_long_lived_access_key,
     rule_require_owner_tag,
     rule_no_destroy_with_active_secrets,
+    rule_no_external_trust,
 ]
 
 

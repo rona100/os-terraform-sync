@@ -67,6 +67,7 @@ Terraform-managed NHIs:
 |---|---|
 | **Ownership** | `resolve_owner`: `owner` tag → `team` tag → module path |
 | **Classification** | `classify`: environment, criticality, data sensitivity, `privileged` (from the policies actually attached) and `credential_type` (from the trust policy) |
+| **Attack surface** | `attached_policies` (*what it can do*) plus a distilled `trust` surface (*who can assume it* — principal type, external?, `ExternalId`?), which the gate also enforces |
 | **Lifecycle awareness** | create / update / **deprecate** / decommission events derived from state |
 
 Ownership and classification flow *one way* (Terraform → Oasis). Runtime facts
@@ -148,11 +149,11 @@ Requires [uv](https://docs.astral.sh/uv/) (Python 3.13 is pinned via
 
 ```bash
 uv sync                 # create .venv and install deps
-./run_demo.sh           # start the mock Oasis API and run all four scenarios
+./run_demo.sh           # start the mock Oasis API and run all five scenarios
 ```
 
 `run_demo.sh` is the fastest way to see everything: it boots the mock API, runs
-both sync modes and both gate verdicts, then shuts the API down.
+both sync modes, a discovery scan, and both gate verdicts, then shuts the API down.
 
 ## Usage
 
@@ -188,14 +189,16 @@ uv run oasis-gate --plan samples/plan_denied.json     # risky plan  -> exit 1 (a
 
 The mock Oasis inventory is **seeded** with two roles Oasis discovered on its own
 (`owner: null`, `source: oasis_discovery`) — mirroring the assignment's record. The
-four `run_demo.sh` scenarios:
+five `run_demo.sh` scenarios:
 
 1. **Sync (two-file).** Diffs `state_v1 → state_v2` directly:
    - **CREATE** `github-actions-deployer` → a **workload identity**: assumed via OIDC
      (`credential_type: federated`) with *no* associated secret — the deliberate
-     contrast with `batch-runner`, which is `static_key` with a long-lived key.
+     contrast with `batch-runner`, which is `static_key` with a long-lived key. Its
+     **trust surface** (who can assume it) is recorded alongside its policies.
    - **CREATE** `invoice-sync` → registered from Terraform with a resolved owner.
-   - **DESTROY** `report-generator` → `lifecycle_status: active → decommissioned`.
+   - **DESTROY** `report-generator` → `lifecycle_status: active → decommission_pending`
+     (Terraform's word alone can't retire it; a discovery scan confirms it — see scenario 3).
    - **UPDATE** `payment-processor` → matches the *discovered* record and reconciles
      `source: oasis_discovery → terraform`, `owner: null → payments-team@…`, and
      flags a **privilege increase** (`+AdministratorAccess`).
@@ -216,9 +219,12 @@ four `run_demo.sh` scenarios:
    Terraform destroyed it. Two scans show why that matters: the first still finds the
    role in the cloud → **`orphaned`** ⚠ (a failed destroy or `state rm` left a usable
    credential behind); a later scan no longer sees it → **`decommissioned`** ✅.
-4. **Gate (clean plan).** A well-formed plan → **APPROVE**, exit 0.
-5. **Gate (risky plan).** An admin-on-new-role plus a long-lived key → **DENY**,
-   exit 1, so `apply` is blocked.
+4. **Gate (clean plan).** A well-formed plan — including a **federated** (GitHub-OIDC)
+   role, the sanctioned workload-identity pattern — → **APPROVE**, exit 0.
+5. **Gate (risky plan).** An admin-on-new-role, a long-lived key, **and a wildcard
+   trust `Principal` attached to an existing role via an *update*** → **DENY**, exit 1,
+   so `apply` is blocked. (That last one is why the gate reasons about *who can assume*
+   a role, on update as well as create — not just what it can do.)
 
 ## Architecture
 
@@ -274,8 +280,9 @@ oasis_bridge/         the integration logic
   sync_cli.py         `oasis-sync`  (detective / zero-touch)
   gate_cli.py         `oasis-gate`  (preventive / opt-in)
 mock_oasis/
-  server.py           mock Oasis REST API (inventory + plan-review), seeded
+  server.py           mock Oasis REST API (inventory + plan-review + scan), seeded
   policy.py           central identity policy rules (server-side)
+  discovery.py        server-side scan: confirms decommission / flags orphans
 samples/              state_v1/v2 and approved/denied plan fixtures
 tests/                offline unit tests
 docs/                 architecture notes + flow diagrams (Mermaid)

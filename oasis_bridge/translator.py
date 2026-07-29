@@ -58,12 +58,13 @@ def resolve_owner(res: TerraformResource) -> Optional[str]:
     return None
 
 
-def _trust_principals(res: TerraformResource) -> list[dict]:
-    """Pull the Principal blocks out of a role's trust policy.
+def _trust_statements(res: TerraformResource) -> list[dict]:
+    """Return the raw `Statement` blocks from a role's trust policy.
 
     `assume_role_policy` arrives as a JSON *string* in state; `Statement` may be a
     single object or a list. Malformed/absent policies yield [] rather than raising --
-    a trust policy we can't parse must not break a sync.
+    a trust policy we can't parse must not break a sync. Statements are kept whole
+    (Principal *and* Condition) so callers can read either.
     """
     raw = res.values.get("assume_role_policy")
     if not raw:
@@ -78,11 +79,81 @@ def _trust_principals(res: TerraformResource) -> list[dict]:
     statements = raw.get("Statement") or []
     if isinstance(statements, dict):
         statements = [statements]
-    principals = []
-    for stmt in statements:
-        if isinstance(stmt, dict) and isinstance(stmt.get("Principal"), dict):
-            principals.append(stmt["Principal"])
-    return principals
+    return [s for s in statements if isinstance(s, dict)]
+
+
+def _trust_principals(res: TerraformResource) -> list[dict]:
+    """Pull just the Principal blocks out of a role's trust policy."""
+    return [
+        stmt["Principal"]
+        for stmt in _trust_statements(res)
+        if isinstance(stmt.get("Principal"), dict)
+    ]
+
+
+def _stmt_requires_external_id(stmt: dict) -> bool:
+    """True if the statement's Condition pins an `sts:ExternalId` (confused-deputy guard)."""
+    condition = stmt.get("Condition")
+    if not isinstance(condition, dict):
+        return False
+    for operands in condition.values():
+        if isinstance(operands, dict) and any(
+            str(k).lower() == "sts:externalid" for k in operands
+        ):
+            return True
+    return False
+
+
+def trust_summary(res: TerraformResource) -> list[dict]:
+    """Distil a role's trust policy into the persisted `trust` surface.
+
+    One entry per principal, capturing what the ILM inventory needs to reason about
+    *who can assume this identity* without keeping the raw policy blob:
+
+      principal_type       : federated | service | aws | wildcard
+      principal            : the principal value (arn / service / account)
+      external             : could this be an outside party? service=False; a
+                             federated provider or a named AWS principal=True
+      requires_external_id : the statement pins an sts:ExternalId condition
+
+    Roles only -- users / GCP service accounts have no `assume_role_policy`, so this
+    is simply []. `credential_type` remains the one-line rollup derived alongside this.
+    """
+    summary: list[dict] = []
+    for stmt in _trust_statements(res):
+        principal = stmt.get("Principal")
+        if not isinstance(principal, dict):
+            # `"Principal": "*"` (anyone) shows up as a bare string, not a dict.
+            if principal == "*":
+                summary.append(
+                    {
+                        "principal_type": "wildcard",
+                        "principal": "*",
+                        "external": True,
+                        "requires_external_id": False,
+                    }
+                )
+            continue
+        requires_external_id = _stmt_requires_external_id(stmt)
+        for kind, values in principal.items():
+            for value in values if isinstance(values, list) else [values]:
+                if value == "*":
+                    ptype, external = "wildcard", True
+                elif kind == "Service":
+                    ptype, external = "service", False
+                elif kind == "Federated":
+                    ptype, external = "federated", True
+                else:  # "AWS" or anything else -> a named/external principal
+                    ptype, external = "aws", True
+                summary.append(
+                    {
+                        "principal_type": ptype,
+                        "principal": value,
+                        "external": external,
+                        "requires_external_id": requires_external_id,
+                    }
+                )
+    return summary
 
 
 def credential_type(
@@ -283,6 +354,7 @@ def to_oasis_identity(
         tags=res.values.get("tags") or {},
         created_at=res.values.get("create_date"),
         classification=classify(res, all_resources),
+        trust=trust_summary(res),
     )
 
 

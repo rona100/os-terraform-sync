@@ -112,14 +112,18 @@ resources, and the gate's admin rule fires on resource creation.
   (`aws_iam_role_policy`, `inline_policy`). None are in `IDENTITY_RESOURCE_TYPES`
   ([models.py:16](../oasis_bridge/models.py#L16)), so the **common** way to grant admin
   is invisible to both the gate and the differ's privilege note.
-- **Trust policy.** ◐ *Partly addressed.* The **translator** now parses
-  `assume_role_policy` to derive `credential_type` (`federated` / `service` /
-  `static_key` / …), so *who may assume the role* is no longer invisible to the model.
-  But the **policy rules never see it** — `mock_oasis/policy.py` inspects only
-  `after.managed_policy_arns` and `tags`. So a change admitting a new
-  external/cross-account principal (wildcard `Principal`, missing `ExternalId`,
-  confused-deputy) still sails through the gate. The exposure is unchanged; only our
-  *visibility* into it improved.
+- **Trust policy.** ◐ *Partly addressed.* *Who may assume the role* is now a
+  first-class part of the model: the translator persists a distilled `trust` surface
+  on the identity (`trust_summary` → principal type / external? / `ExternalId`?), and
+  the gate **acts** on it — `rule_no_external_trust` in `mock_oasis/policy.py` **denies**
+  a wildcard `Principal` and **warns** on a bare cross-account `AWS` principal with no
+  `sts:ExternalId` condition, on **create *and* update** (unlike the create-only admin
+  rule). Federation (OIDC/SAML) is deliberately *allowed* — it is the sanctioned
+  workload-identity pattern, not a finding. **Residual:** the check is shape-based, not
+  account-aware — a plan's ARNs are "known after apply" (null), so we cannot compute
+  true same-vs-cross-account and instead flag the unambiguous shapes (wildcard,
+  unconstrained named principal). Effective cross-account reachability still needs the
+  account graph (below).
 - **Boundaries & non-identity grants.** Permission boundaries are ignored (false
   positives and negatives); privilege granted by non-identity resources (a standalone
   `aws_iam_policy` with `Action:"*"`, S3/KMS/SQS resource policies) is out of scope.
@@ -190,9 +194,12 @@ moved/replace are handled by identity continuity rather than address bookkeeping
 3. **Order & isolate** — gate on state `serial`; conditional/versioned writes. Now more
    urgent, not less: a second writer (discovery) makes the unserialised-write problem
    real (§2).
-4. ◐ **Effective permissions** — *partial*: the trust policy is now parsed for
-   `credential_type`, but nothing evaluates the attachment + inline + trust-policy graph
-   as a union, and the policy rules still read one inline argument on create only.
+4. ◐ **Effective permissions** — *partial*: the trust policy is now persisted as a
+   first-class `trust` surface *and* gated (wildcard → deny, unconstrained cross-account
+   → warn, on create **and** update). Still missing: nothing evaluates the attachment +
+   inline + managed-policy graph as a *union* (the admin rule still reads one inline
+   argument on create only), and cross-account reachability is shape-based, not
+   account-aware.
 5. **ARN-keyed identity** — address is metadata; handle moved/replace via identity
    continuity.
 6. **Scope by workspace** — stamp records with their originating state key.
